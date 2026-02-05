@@ -14,9 +14,10 @@
  * - error: Returns an HTTP error response
  * - timeout: Never responds (simulates connection timeout)
  * - corrupt: Returns malformed JSON
- * - rate-limit: Fails a percentage of requests
+ * - rate-limit: Drops a percentage of requests randomly (429)
+ * - token-bucket: True rate limiter using token bucket algorithm (429 + Retry-After)
  */
-export type ChaosType = 'latency' | 'error' | 'timeout' | 'corrupt' | 'rate-limit';
+export type ChaosType = 'latency' | 'error' | 'timeout' | 'corrupt' | 'rate-limit' | 'token-bucket';
 
 /**
  * HTTP methods that can be matched by a rule.
@@ -45,6 +46,10 @@ export interface ChaosRule {
     errorStatusCode?: number;  // For 'error': HTTP status code to return
     errorMessage?: string;     // For 'error': error message body
     failRate?: number;         // For 'rate-limit': percentage (0-100) of requests to fail
+
+    // Token bucket rate limiter parameters
+    rps?: number;              // For 'token-bucket': tokens per second (refill rate)
+    burst?: number;            // For 'token-bucket': max bucket capacity
 }
 
 // ============================================================================

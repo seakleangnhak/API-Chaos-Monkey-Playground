@@ -183,11 +183,18 @@ async function proxyHandler(
             logEntry.chaosDetails = actionsApplied.join(' → ');
 
             if (preResult.immediateResponse) {
-                // Rate limit or error response
+                // Rate limit, drop rate, or error response
                 logEntry.statusCode = preResult.immediateResponse.statusCode;
                 logEntry.responseTime = Date.now() - startTime;
                 addLog(logEntry);
                 broadcast({ type: 'new-log', log: logEntry });
+
+                // Set any custom headers (e.g., Retry-After for rate limiting)
+                if (preResult.immediateResponse.headers) {
+                    for (const [key, value] of Object.entries(preResult.immediateResponse.headers)) {
+                        res.set(key, value);
+                    }
+                }
 
                 res
                     .status(preResult.immediateResponse.statusCode)

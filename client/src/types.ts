@@ -4,7 +4,7 @@
  * Mirrors the server types for type safety across the stack.
  */
 
-export type ChaosType = 'latency' | 'error' | 'timeout' | 'corrupt' | 'rate-limit';
+export type ChaosType = 'latency' | 'error' | 'timeout' | 'corrupt' | 'rate-limit' | 'token-bucket';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | '*';
 
 export interface ChaosRule {
@@ -20,6 +20,9 @@ export interface ChaosRule {
     errorStatusCode?: number;
     errorMessage?: string;
     failRate?: number;
+    // Token bucket parameters
+    rps?: number;
+    burst?: number;
 }
 
 export interface RequestLog {

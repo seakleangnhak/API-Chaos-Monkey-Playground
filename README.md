@@ -61,7 +61,37 @@ UI opens at `http://localhost:5173`
 | **Error** | Returns HTTP error codes | `errorStatusCode`, `errorMessage` |
 | **Timeout** | Never responds (hangs) | - |
 | **Corrupt** | Returns malformed JSON | - |
-| **Rate Limit** | Fails X% of requests | `failRate` - percentage (0-100) |
+| **Drop Rate** | Randomly fails X% of requests with 429 | `failRate` - percentage (0-100) |
+| **Token Bucket** | True rate limiter with Retry-After | `rps` (tokens/sec), `burst` (max capacity) |
+
+### Drop Rate vs Token Bucket
+
+**Drop Rate** (legacy `rate-limit`): Simulates random failures by dropping X% of requests. Each request has an independent failRate% chance of returning 429.
+
+```json
+{
+  "name": "Random 429s",
+  "pathPattern": "/api/.*",
+  "methods": ["*"],
+  "chaosType": "rate-limit",
+  "failRate": 30,
+  "enabled": true
+}
+```
+
+**Token Bucket**: True rate limiting using the token bucket algorithm. Tokens refill at `rps` per second up to `burst` capacity. When empty, returns 429 with `Retry-After` header.
+
+```json
+{
+  "name": "5 RPS limit",
+  "pathPattern": "/api/.*",
+  "methods": ["*"],
+  "chaosType": "token-bucket",
+  "rps": 5,
+  "burst": 10,
+  "enabled": true
+}
+```
 
 ## API Endpoints
 

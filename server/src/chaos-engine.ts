@@ -3,7 +3,7 @@
  * 
  * Implements chaos injection as an explicit ordered pipeline:
  * 1. Match rules (first match wins)
- * 2. Rate limit check
+ * 2. Drop rate / Token bucket check
  * 3. Timeout (hang then close)
  * 4. Forced error (return errorStatusCode)
  * 5. [Proxy to upstream - handled by proxy.ts]
@@ -15,6 +15,74 @@
 
 import { ChaosRule, ChaosType, HttpMethod } from './types.js';
 import { getRules } from './state.js';
+
+// ============================================================================
+// Token Bucket State
+// ============================================================================
+
+/**
+ * Token bucket state per key (method + ruleId).
+ * Tokens refill at `rps` rate up to `burst` capacity.
+ */
+interface TokenBucket {
+    tokens: number;
+    lastRefill: number; // Unix timestamp in ms
+    rps: number;
+    burst: number;
+}
+
+/**
+ * In-memory storage for token buckets, keyed by "method:ruleId".
+ */
+const tokenBuckets = new Map<string, TokenBucket>();
+
+/**
+ * Get or create a token bucket for a given key.
+ */
+function getOrCreateBucket(key: string, rps: number, burst: number): TokenBucket {
+    let bucket = tokenBuckets.get(key);
+
+    if (!bucket) {
+        bucket = {
+            tokens: burst, // Start with full bucket
+            lastRefill: Date.now(),
+            rps,
+            burst,
+        };
+        tokenBuckets.set(key, bucket);
+    }
+
+    // Update config if changed (allows dynamic rule updates)
+    bucket.rps = rps;
+    bucket.burst = burst;
+
+    return bucket;
+}
+
+/**
+ * Try to consume a token from the bucket.
+ * Returns { allowed: true } if token consumed, or { allowed: false, retryAfter: seconds }.
+ */
+function tryConsumeToken(bucket: TokenBucket): { allowed: true } | { allowed: false; retryAfter: number } {
+    const now = Date.now();
+    const elapsed = (now - bucket.lastRefill) / 1000; // seconds
+
+    // Refill tokens based on elapsed time
+    const tokensToAdd = elapsed * bucket.rps;
+    bucket.tokens = Math.min(bucket.burst, bucket.tokens + tokensToAdd);
+    bucket.lastRefill = now;
+
+    if (bucket.tokens >= 1) {
+        bucket.tokens -= 1;
+        return { allowed: true };
+    }
+
+    // Calculate how long until a token is available
+    const tokensNeeded = 1 - bucket.tokens;
+    const retryAfter = Math.ceil(tokensNeeded / bucket.rps);
+
+    return { allowed: false, retryAfter: Math.max(1, retryAfter) };
+}
 
 // ============================================================================
 // Types
@@ -33,6 +101,7 @@ export interface PreProxyResult {
         statusCode: number;
         body: string;
         contentType: string;
+        headers?: Record<string, string>;
     } | null;
 
     /** Actions applied so far */
@@ -107,7 +176,7 @@ function matchesPath(pattern: string, path: string): boolean {
  * 
  * Order:
  * 1. Match rules
- * 2. Rate limit check
+ * 2. Drop rate check (rate-limit) OR Token bucket check (token-bucket)
  * 3. Timeout
  * 4. Forced error
  * 
@@ -131,21 +200,21 @@ export function runPreProxyPipeline(path: string, method: string): PreProxyResul
 
     actions.push(`match:${rule.name}`);
 
-    // Step 2: Rate limit check (applies to rate-limit type)
+    // Step 2a: Drop rate check (random 429 - legacy "rate-limit" type)
     if (rule.chaosType === 'rate-limit') {
         const failRate = rule.failRate ?? 50;
         const roll = Math.random() * 100;
-        const failed = roll < failRate;
+        const triggered = roll < failRate;
 
-        if (failed) {
-            actions.push(`rate_limit:failed:${failRate}%`);
+        if (triggered) {
+            actions.push(`drop_rate:triggered:${failRate}%`);
             return {
                 skipUpstream: true,
                 immediateResponse: {
-                    statusCode: 503,
+                    statusCode: 429,
                     body: JSON.stringify({
                         error: true,
-                        message: 'Service temporarily unavailable (rate limited)',
+                        message: 'Too Many Requests (drop rate triggered)',
                         chaosMonkey: true,
                     }),
                     contentType: 'application/json',
@@ -154,11 +223,50 @@ export function runPreProxyPipeline(path: string, method: string): PreProxyResul
                 matchedRule: rule,
             };
         } else {
-            actions.push(`rate_limit:passed:${failRate}%`);
-            // Continue to upstream
+            actions.push(`drop_rate:passed:${failRate}%`);
             return {
                 skipUpstream: false,
                 immediateResponse: null,
+                actionsApplied: actions,
+                matchedRule: rule,
+            };
+        }
+    }
+
+    // Step 2b: Token bucket rate limiter (true rate limiting)
+    if (rule.chaosType === 'token-bucket') {
+        const rps = rule.rps ?? 10;
+        const burst = rule.burst ?? rps;
+        const bucketKey = `${method}:${rule.id}`;
+
+        const bucket = getOrCreateBucket(bucketKey, rps, burst);
+        const result = tryConsumeToken(bucket);
+
+        if (result.allowed) {
+            actions.push(`token_bucket:passed`);
+            return {
+                skipUpstream: false,
+                immediateResponse: null,
+                actionsApplied: actions,
+                matchedRule: rule,
+            };
+        } else {
+            actions.push(`token_bucket:blocked(retry_after=${result.retryAfter})`);
+            return {
+                skipUpstream: true,
+                immediateResponse: {
+                    statusCode: 429,
+                    body: JSON.stringify({
+                        error: true,
+                        message: 'Too Many Requests (rate limited)',
+                        retryAfter: result.retryAfter,
+                        chaosMonkey: true,
+                    }),
+                    contentType: 'application/json',
+                    headers: {
+                        'Retry-After': String(result.retryAfter),
+                    },
+                },
                 actionsApplied: actions,
                 matchedRule: rule,
             };
@@ -346,4 +454,11 @@ export function corruptJsonBody(body: string): CorruptionResult {
  */
 export function delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Clear all token buckets (useful for testing).
+ */
+export function clearTokenBuckets(): void {
+    tokenBuckets.clear();
 }
