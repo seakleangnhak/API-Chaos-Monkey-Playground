@@ -59,7 +59,7 @@ UI opens at `http://localhost:5173`
 |------|-------------|------------|
 | **Latency** | Adds delay to responses | `latencyMs` - delay in milliseconds |
 | **Error** | Returns HTTP error codes | `errorStatusCode`, `errorMessage` |
-| **Timeout** | Never responds (hangs) | - |
+| **Timeout** | Hangs then destroys socket | `timeoutMs` (default 8000), `jitterMs` (default 0) |
 | **Corrupt** | Returns malformed JSON | - |
 | **Drop Rate** | Randomly fails X% of requests with 429 | `failRate` - percentage (0-100) |
 | **Token Bucket** | True rate limiter with Retry-After | `rps` (tokens/sec), `burst` (max capacity) |
@@ -127,6 +127,22 @@ curl -X POST http://localhost:3001/api/rules \
 
 # Test the proxy (should be slow!)
 curl http://localhost:3001/proxy/posts/1
+```
+
+## Manual Test: Timeout Chaos
+
+```bash
+# Create a timeout rule (8 second hang)
+curl -X POST http://localhost:3001/api/rules \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Timeout Test", "pathPattern": "/posts.*", "chaosType": "timeout", "timeoutMs": 8000, "methods": ["*"], "enabled": true}'
+
+# Test - should hang ~8 seconds then connection drops (curl shows error 52)
+time curl -v http://localhost:3001/proxy/posts/1
+
+# Check logs - status should be "timeout"
+curl http://localhost:3001/api/logs?limit=1 | jq '.data[0] | {statusCode, actionsApplied}'
+# Expected: {"statusCode": "timeout", "actionsApplied": ["match:Timeout Test", "timeout:triggered(ms=8000)"]}
 ```
 
 ## Tech Stack

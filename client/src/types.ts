@@ -23,6 +23,9 @@ export interface ChaosRule {
     // Token bucket parameters
     rps?: number;
     burst?: number;
+    // Timeout parameters
+    timeoutMs?: number;
+    jitterMs?: number;
 }
 
 export interface RequestLog {
@@ -31,7 +34,7 @@ export interface RequestLog {
     method: string;
     path: string;
     headers: Record<string, string>;
-    statusCode?: number;
+    statusCode?: number | 'timeout';
     responseTime?: number;
     chaosApplied: boolean;
     chaosType?: ChaosType;

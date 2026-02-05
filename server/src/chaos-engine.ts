@@ -88,10 +88,6 @@ function tryConsumeToken(bucket: TokenBucket): { allowed: true } | { allowed: fa
 // Types
 // ============================================================================
 
-/**
- * Result of the pre-proxy chaos pipeline.
- * Determines what happens before we even try to reach upstream.
- */
 export interface PreProxyResult {
     /** Should we skip the upstream request entirely? */
     skipUpstream: boolean;
@@ -103,6 +99,11 @@ export interface PreProxyResult {
         contentType: string;
         headers?: Record<string, string>;
     } | null;
+
+    /** If timeout chaos, how long to hang before destroying socket */
+    timeoutConfig?: {
+        durationMs: number;
+    };
 
     /** Actions applied so far */
     actionsApplied: string[];
@@ -273,12 +274,20 @@ export function runPreProxyPipeline(path: string, method: string): PreProxyResul
         }
     }
 
-    // Step 3: Timeout (hang, don't respond)
+    // Step 3: Timeout (hang, don't respond, destroy socket after delay)
     if (rule.chaosType === 'timeout') {
-        actions.push('timeout:hang');
+        const DEFAULT_TIMEOUT_MS = 8000;
+        const baseTimeout = rule.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const jitter = rule.jitterMs ?? 0;
+        // Apply random jitter: +/- jitterMs
+        const jitterOffset = jitter > 0 ? Math.floor(Math.random() * jitter * 2) - jitter : 0;
+        const durationMs = Math.max(0, baseTimeout + jitterOffset);
+
+        actions.push(`timeout:triggered(ms=${durationMs})`);
         return {
             skipUpstream: true,
-            immediateResponse: null, // null = hang/timeout
+            immediateResponse: null, // null = hang/timeout, no HTTP response
+            timeoutConfig: { durationMs },
             actionsApplied: actions,
             matchedRule: rule,
         };

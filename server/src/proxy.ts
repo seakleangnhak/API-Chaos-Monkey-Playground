@@ -202,18 +202,43 @@ async function proxyHandler(
                     .send(preResult.immediateResponse.body);
                 return;
             } else {
-                // Timeout - hang without responding
-                logEntry.responseTime = Date.now() - startTime;
+                // ---------------------------------------------------------------
+                // Timeout chaos: hang without responding, then destroy socket
+                // ---------------------------------------------------------------
+                // This simulates a real network timeout. We do NOT send any HTTP
+                // headers or body - we just hold the connection open for the
+                // configured duration, then forcibly destroy the socket.
+
+                const timeoutMs = preResult.timeoutConfig?.durationMs ?? 8000;
+                const startTimeout = Date.now();
+
+                // Log immediately with status 'timeout' - responseTime will be updated later
+                logEntry.statusCode = 'timeout';
+                logEntry.responseTime = timeoutMs; // Expected duration
                 addLog(logEntry);
                 broadcast({ type: 'new-log', log: logEntry });
 
-                const cleanupTimer = setTimeout(() => {
-                    if (!res.headersSent && req.socket && !req.socket.destroyed) {
-                        req.socket.destroy();
+                // Schedule socket destruction after the timeout duration
+                const destroyTimer = setTimeout(() => {
+                    // Destroy the underlying TCP socket without sending any HTTP response.
+                    // This mimics how a real timeout appears to the client.
+                    const sock = req.socket;
+                    if (sock && !sock.destroyed) {
+                        sock.destroy();
                     }
-                }, TIMEOUT_CHAOS_MAX_DURATION_MS);
+                }, timeoutMs);
 
-                req.on('close', () => clearTimeout(cleanupTimer));
+                // Cleanup: clear the timer if client disconnects early
+                // This prevents timer leaks if client aborts before timeout completes
+                const cleanup = () => {
+                    clearTimeout(destroyTimer);
+                };
+
+                req.on('close', cleanup);
+                req.on('aborted', cleanup);
+                res.on('finish', cleanup);
+                res.on('close', cleanup);
+
                 return;
             }
         }

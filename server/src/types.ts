@@ -50,6 +50,10 @@ export interface ChaosRule {
     // Token bucket rate limiter parameters
     rps?: number;              // For 'token-bucket': tokens per second (refill rate)
     burst?: number;            // For 'token-bucket': max bucket capacity
+
+    // Timeout parameters
+    timeoutMs?: number;        // For 'timeout': duration to hang before destroying socket (default 8000)
+    jitterMs?: number;         // For 'timeout': random jitter +/- ms (default 0)
 }
 
 // ============================================================================
@@ -69,7 +73,7 @@ export interface RequestLog {
     headers: Record<string, string>;
 
     // Response details (if completed)
-    statusCode?: number;
+    statusCode?: number | 'timeout'; // Numeric or 'timeout' for timeout chaos
     responseTime?: number;     // Total time including artificial delays
 
     // Chaos details
