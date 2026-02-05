@@ -11,7 +11,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { apiRouter } from './api.js';
-import { proxyMiddleware } from './proxy.js';
+import { proxyRouter } from './proxy.js';
 import { initWebSocket } from './websocket.js';
 
 const PORT = process.env.PORT || 3001;
@@ -32,7 +32,7 @@ app.get('/health', (_req, res) => {
 app.use('/api', apiRouter);
 
 // Proxy routes - all requests to /proxy/* get forwarded
-app.use('/proxy', proxyMiddleware);
+app.use('/proxy', proxyRouter);
 
 // Create HTTP server (needed for WebSocket)
 const server = createServer(app);
