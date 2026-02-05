@@ -73,6 +73,7 @@ export interface RequestLog {
     chaosRuleId?: string;
     chaosRuleName?: string;
     chaosDetails?: string;     // Human-readable description of chaos applied
+    actionsApplied?: string[]; // Array of actions applied in pipeline order
 }
 
 // ============================================================================

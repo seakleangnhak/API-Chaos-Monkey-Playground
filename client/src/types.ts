@@ -35,6 +35,7 @@ export interface RequestLog {
     chaosRuleId?: string;
     chaosRuleName?: string;
     chaosDetails?: string;
+    actionsApplied?: string[];
 }
 
 export interface ProxyConfig {

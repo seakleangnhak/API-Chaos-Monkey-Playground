@@ -1,21 +1,76 @@
 /**
- * Chaos Engine
+ * Chaos Engine - Pipeline-Based Implementation
  * 
- * Core logic for matching requests to rules and applying chaos effects.
- * Designed to be deterministic where possible (seeded randomness for
- * reproducible testing scenarios).
+ * Implements chaos injection as an explicit ordered pipeline:
+ * 1. Match rules (first match wins)
+ * 2. Rate limit check
+ * 3. Timeout (hang then close)
+ * 4. Forced error (return errorStatusCode)
+ * 5. [Proxy to upstream - handled by proxy.ts]
+ * 6. Latency delay (before sending response)
+ * 7. Corrupt JSON (only if upstream returned JSON)
+ * 
+ * Each step produces an action string added to actionsApplied array.
  */
 
 import { ChaosRule, ChaosType, HttpMethod } from './types.js';
 import { getRules } from './state.js';
 
 // ============================================================================
+// Types
+// ============================================================================
+
+/**
+ * Result of the pre-proxy chaos pipeline.
+ * Determines what happens before we even try to reach upstream.
+ */
+export interface PreProxyResult {
+    /** Should we skip the upstream request entirely? */
+    skipUpstream: boolean;
+
+    /** If skipping, what response to send? (null = timeout/hang) */
+    immediateResponse: {
+        statusCode: number;
+        body: string;
+        contentType: string;
+    } | null;
+
+    /** Actions applied so far */
+    actionsApplied: string[];
+
+    /** The matched rule, if any */
+    matchedRule: ChaosRule | null;
+}
+
+/**
+ * Result of applying post-proxy chaos (after upstream response).
+ */
+export interface PostProxyResult {
+    /** Delay to apply before sending response to client */
+    delayMs: number;
+
+    /** Should we corrupt the response body? */
+    corruptResponse: boolean;
+
+    /** Actions applied in post phase */
+    actionsApplied: string[];
+}
+
+/**
+ * Corrupted response result.
+ */
+export interface CorruptionResult {
+    body: string;
+    action: string;
+}
+
+// ============================================================================
 // Rule Matching
 // ============================================================================
 
 /**
- * Find the first enabled rule that matches the given request.
- * Rules are checked in order of creation.
+ * Find the first enabled rule matching the request.
+ * Rules are checked in creation order (first match wins).
  */
 export function findMatchingRule(path: string, method: string): ChaosRule | null {
     const rules = getRules();
@@ -24,179 +79,262 @@ export function findMatchingRule(path: string, method: string): ChaosRule | null
         if (!rule.enabled) continue;
         if (!matchesMethod(rule.methods, method)) continue;
         if (!matchesPath(rule.pathPattern, path)) continue;
-
         return rule;
     }
 
     return null;
 }
 
-/**
- * Check if the request method matches the rule's method filter.
- */
-function matchesMethod(allowedMethods: HttpMethod[], requestMethod: string): boolean {
-    if (allowedMethods.includes('*')) return true;
-    return allowedMethods.includes(requestMethod.toUpperCase() as HttpMethod);
+function matchesMethod(allowed: HttpMethod[], method: string): boolean {
+    if (allowed.includes('*')) return true;
+    return allowed.includes(method.toUpperCase() as HttpMethod);
 }
 
-/**
- * Check if the request path matches the rule's path pattern.
- * Pattern is treated as a regex.
- */
 function matchesPath(pattern: string, path: string): boolean {
     try {
-        const regex = new RegExp(pattern);
-        return regex.test(path);
+        return new RegExp(pattern).test(path);
     } catch {
-        // Invalid regex - treat as literal string match
         return path.includes(pattern);
     }
 }
 
 // ============================================================================
-// Chaos Effects
+// Pre-Proxy Pipeline (Steps 1-4)
 // ============================================================================
 
 /**
- * Result of applying chaos to a request.
+ * Run the pre-proxy chaos pipeline.
+ * 
+ * Order:
+ * 1. Match rules
+ * 2. Rate limit check
+ * 3. Timeout
+ * 4. Forced error
+ * 
+ * @returns Result indicating whether to skip upstream and what response to send
  */
-export interface ChaosResult {
-    shouldBlock: boolean;       // If true, don't forward to target
-    delayMs: number;            // Delay in milliseconds before proceeding
-    errorResponse?: {           // If set, return this error instead of forwarding
-        statusCode: number;
-        body: string;
-        contentType: string;
-    };
-    description: string;        // Human-readable description for logging
-}
+export function runPreProxyPipeline(path: string, method: string): PreProxyResult {
+    const actions: string[] = [];
 
-/**
- * Apply the chaos effect defined by the rule.
- */
-export function applyChaos(rule: ChaosRule): ChaosResult {
-    switch (rule.chaosType) {
-        case 'latency':
-            return applyLatency(rule);
-        case 'error':
-            return applyError(rule);
-        case 'timeout':
-            return applyTimeout();
-        case 'corrupt':
-            return applyCorruption();
-        case 'rate-limit':
-            return applyRateLimit(rule);
-        default:
-            return { shouldBlock: false, delayMs: 0, description: 'Unknown chaos type' };
-    }
-}
+    // Step 1: Match rules
+    const rule = findMatchingRule(path, method);
 
-/**
- * Add latency to the request.
- */
-function applyLatency(rule: ChaosRule): ChaosResult {
-    let delayMs: number;
-
-    if (rule.latencyMs !== undefined) {
-        // Fixed delay
-        delayMs = rule.latencyMs;
-    } else {
-        // Random delay between min and max
-        const min = rule.latencyMinMs ?? 100;
-        const max = rule.latencyMaxMs ?? 1000;
-        delayMs = Math.floor(Math.random() * (max - min + 1)) + min;
-    }
-
-    return {
-        shouldBlock: false,
-        delayMs,
-        description: `Added ${delayMs}ms latency`,
-    };
-}
-
-/**
- * Return an error response instead of forwarding.
- */
-function applyError(rule: ChaosRule): ChaosResult {
-    const statusCode = rule.errorStatusCode ?? 500;
-    const message = rule.errorMessage ?? 'Chaos Monkey Error';
-
-    return {
-        shouldBlock: true,
-        delayMs: 0,
-        errorResponse: {
-            statusCode,
-            body: JSON.stringify({
-                error: true,
-                message,
-                chaosMonkey: true,
-            }),
-            contentType: 'application/json',
-        },
-        description: `Returned ${statusCode} error`,
-    };
-}
-
-/**
- * Never respond (simulate timeout).
- */
-function applyTimeout(): ChaosResult {
-    return {
-        shouldBlock: true,
-        delayMs: 0,
-        // No error response - the request just hangs
-        description: 'Request will timeout (no response)',
-    };
-}
-
-/**
- * Return a corrupted/malformed response.
- */
-function applyCorruption(): ChaosResult {
-    // Generate intentionally malformed JSON
-    const corruptedBody = '{"data": [1, 2, 3, "incomplete...';
-
-    return {
-        shouldBlock: true,
-        delayMs: 0,
-        errorResponse: {
-            statusCode: 200, // Looks successful but body is broken
-            body: corruptedBody,
-            contentType: 'application/json',
-        },
-        description: 'Returned corrupted JSON response',
-    };
-}
-
-/**
- * Randomly fail a percentage of requests.
- */
-function applyRateLimit(rule: ChaosRule): ChaosResult {
-    const failRate = rule.failRate ?? 50;
-    const shouldFail = Math.random() * 100 < failRate;
-
-    if (shouldFail) {
+    if (!rule) {
+        actions.push('match:no_rule');
         return {
-            shouldBlock: true,
-            delayMs: 0,
-            errorResponse: {
-                statusCode: 503,
+            skipUpstream: false,
+            immediateResponse: null,
+            actionsApplied: actions,
+            matchedRule: null,
+        };
+    }
+
+    actions.push(`match:${rule.name}`);
+
+    // Step 2: Rate limit check (applies to rate-limit type)
+    if (rule.chaosType === 'rate-limit') {
+        const failRate = rule.failRate ?? 50;
+        const roll = Math.random() * 100;
+        const failed = roll < failRate;
+
+        if (failed) {
+            actions.push(`rate_limit:failed:${failRate}%`);
+            return {
+                skipUpstream: true,
+                immediateResponse: {
+                    statusCode: 503,
+                    body: JSON.stringify({
+                        error: true,
+                        message: 'Service temporarily unavailable (rate limited)',
+                        chaosMonkey: true,
+                    }),
+                    contentType: 'application/json',
+                },
+                actionsApplied: actions,
+                matchedRule: rule,
+            };
+        } else {
+            actions.push(`rate_limit:passed:${failRate}%`);
+            // Continue to upstream
+            return {
+                skipUpstream: false,
+                immediateResponse: null,
+                actionsApplied: actions,
+                matchedRule: rule,
+            };
+        }
+    }
+
+    // Step 3: Timeout (hang, don't respond)
+    if (rule.chaosType === 'timeout') {
+        actions.push('timeout:hang');
+        return {
+            skipUpstream: true,
+            immediateResponse: null, // null = hang/timeout
+            actionsApplied: actions,
+            matchedRule: rule,
+        };
+    }
+
+    // Step 4: Forced error
+    if (rule.chaosType === 'error') {
+        const statusCode = rule.errorStatusCode ?? 500;
+        const message = rule.errorMessage ?? 'Internal Server Error';
+        actions.push(`error:${statusCode}`);
+
+        return {
+            skipUpstream: true,
+            immediateResponse: {
+                statusCode,
                 body: JSON.stringify({
                     error: true,
-                    message: 'Service temporarily unavailable (rate limited by Chaos Monkey)',
+                    message,
                     chaosMonkey: true,
                 }),
                 contentType: 'application/json',
             },
-            description: `Rate limit triggered (${failRate}% fail rate)`,
+            actionsApplied: actions,
+            matchedRule: rule,
         };
     }
 
+    // Other chaos types (latency, corrupt) are handled post-proxy
     return {
-        shouldBlock: false,
-        delayMs: 0,
-        description: `Rate limit passed (${failRate}% fail rate)`,
+        skipUpstream: false,
+        immediateResponse: null,
+        actionsApplied: actions,
+        matchedRule: rule,
     };
+}
+
+// ============================================================================
+// Post-Proxy Pipeline (Steps 6-7)
+// ============================================================================
+
+/**
+ * Determine post-proxy chaos effects based on the matched rule.
+ * 
+ * Order:
+ * 6. Latency delay
+ * 7. Corrupt JSON
+ */
+export function getPostProxyEffects(rule: ChaosRule | null): PostProxyResult {
+    const actions: string[] = [];
+    let delayMs = 0;
+    let corruptResponse = false;
+
+    if (!rule) {
+        return { delayMs: 0, corruptResponse: false, actionsApplied: [] };
+    }
+
+    // Step 6: Latency delay
+    if (rule.chaosType === 'latency') {
+        if (rule.latencyMs !== undefined) {
+            delayMs = rule.latencyMs;
+        } else {
+            const min = rule.latencyMinMs ?? 100;
+            const max = rule.latencyMaxMs ?? 1000;
+            delayMs = Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+        actions.push(`latency:${delayMs}ms`);
+    }
+
+    // Step 7: Corrupt JSON
+    if (rule.chaosType === 'corrupt') {
+        corruptResponse = true;
+        // Action will be added when we actually corrupt
+    }
+
+    return { delayMs, corruptResponse, actionsApplied: actions };
+}
+
+/**
+ * Corrupt a JSON response body.
+ * Only call this if the upstream Content-Type is application/json.
+ * 
+ * Corruption strategies (randomly chosen):
+ * - Remove a key
+ * - Truncate the body
+ * - Add invalid characters
+ * - Break JSON syntax
+ */
+export function corruptJsonBody(body: string): CorruptionResult {
+    const strategies = [
+        'truncate',
+        'invalid_chars',
+        'break_syntax',
+        'remove_key',
+    ];
+
+    const strategy = strategies[Math.floor(Math.random() * strategies.length)];
+
+    switch (strategy) {
+        case 'truncate': {
+            // Cut off the last 30-70% of the body
+            const cutPoint = Math.floor(body.length * (0.3 + Math.random() * 0.4));
+            return {
+                body: body.slice(0, cutPoint),
+                action: `corrupt_json:truncated_at_${cutPoint}`,
+            };
+        }
+
+        case 'invalid_chars': {
+            // Insert invalid UTF-8 or control characters
+            const insertPoint = Math.floor(Math.random() * body.length);
+            const corrupted = body.slice(0, insertPoint) + '\x00\xFF\xFE' + body.slice(insertPoint);
+            return {
+                body: corrupted,
+                action: 'corrupt_json:invalid_chars',
+            };
+        }
+
+        case 'break_syntax': {
+            // Remove random brackets, quotes, or colons
+            const chars = ['{', '}', '[', ']', '"', ':', ','];
+            const charToRemove = chars[Math.floor(Math.random() * chars.length)];
+            const idx = body.indexOf(charToRemove);
+            if (idx !== -1) {
+                const corrupted = body.slice(0, idx) + body.slice(idx + 1);
+                return {
+                    body: corrupted,
+                    action: `corrupt_json:removed_char:${charToRemove}`,
+                };
+            }
+            // Fallback: truncate
+            return {
+                body: body.slice(0, -10),
+                action: 'corrupt_json:truncated_fallback',
+            };
+        }
+
+        case 'remove_key': {
+            // Try to parse and remove a random key
+            try {
+                const obj = JSON.parse(body);
+                if (typeof obj === 'object' && obj !== null) {
+                    const keys = Object.keys(obj);
+                    if (keys.length > 0) {
+                        const keyToRemove = keys[Math.floor(Math.random() * keys.length)];
+                        delete obj[keyToRemove];
+                        return {
+                            body: JSON.stringify(obj),
+                            action: `corrupt_json:removed_key:${keyToRemove}`,
+                        };
+                    }
+                }
+            } catch {
+                // Not valid JSON, fall through
+            }
+            // Fallback: break syntax
+            return {
+                body: body.slice(0, -5) + '<<<CORRUPTED>>>',
+                action: 'corrupt_json:appended_garbage',
+            };
+        }
+
+        default:
+            return { body, action: 'corrupt_json:none' };
+    }
 }
 
 // ============================================================================
