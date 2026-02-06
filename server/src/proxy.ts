@@ -290,17 +290,44 @@ async function proxyHandler(
         }
 
         // -----------------------------------------------------------------------
-        // Step 7: Corrupt JSON (only if upstream returned JSON)
+        // Step 7: Corrupt JSON (only if safe to do so)
         // -----------------------------------------------------------------------
 
         let finalBody: Buffer | string = Buffer.from(responseBuffer);
         const contentType = fetchResponse.headers.get('content-type') || '';
+        const contentEncoding = fetchResponse.headers.get('content-encoding') || '';
+        const contentLength = responseBuffer.byteLength;
+        const MAX_CORRUPT_SIZE = 1024 * 1024; // 1MB max for corruption
+        let wasCorrupted = false;
 
-        if (postEffects.corruptResponse && contentType.includes('application/json')) {
-            const bodyText = Buffer.from(responseBuffer).toString('utf-8');
-            const corrupted = corruptJsonBody(bodyText);
-            finalBody = corrupted.body;
-            actionsApplied.push(corrupted.action);
+        // Check all conditions for safe JSON corruption
+        const isJsonContentType = contentType.toLowerCase().includes('application/json') ||
+            contentType.toLowerCase().includes('+json');
+        const isEncodedResponse = /gzip|br|deflate/i.test(contentEncoding);
+        const isNoContentStatus = fetchResponse.status === 204 || fetchResponse.status === 304;
+        const isTooLarge = contentLength > MAX_CORRUPT_SIZE;
+
+        if (postEffects.corruptResponse) {
+            if (!isJsonContentType) {
+                actionsApplied.push('corrupt_json:skipped(reason=not_json)');
+            } else if (isNoContentStatus) {
+                actionsApplied.push(`corrupt_json:skipped(reason=status_${fetchResponse.status})`);
+            } else if (isEncodedResponse) {
+                actionsApplied.push(`corrupt_json:skipped(reason=encoded_${contentEncoding})`);
+            } else if (isTooLarge) {
+                actionsApplied.push(`corrupt_json:skipped(reason=too_large_${contentLength})`);
+            } else {
+                // Safe to corrupt
+                const bodyText = Buffer.from(responseBuffer).toString('utf-8');
+                const corrupted = corruptJsonBody(bodyText);
+                finalBody = corrupted.body;
+                actionsApplied.push(corrupted.action);
+
+                // Only mark as corrupted if actual corruption occurred (not skipped)
+                if (!corrupted.action.includes('skipped')) {
+                    wasCorrupted = true;
+                }
+            }
         }
 
         // Log completion
@@ -314,9 +341,18 @@ async function proxyHandler(
         // Forward response headers
         fetchResponse.headers.forEach((value, key) => {
             if (!SKIP_RESPONSE_HEADERS.has(key.toLowerCase())) {
+                // Don't forward Content-Length if we corrupted the response
+                if (key.toLowerCase() === 'content-length' && wasCorrupted) {
+                    return;
+                }
                 res.setHeader(key, value);
             }
         });
+
+        // Add corruption signature header when corruption was actually applied
+        if (wasCorrupted) {
+            res.setHeader('X-Chaos-Corrupted', '1');
+        }
 
         res.status(fetchResponse.status).send(finalBody);
 

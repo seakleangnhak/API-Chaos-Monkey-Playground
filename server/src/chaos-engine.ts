@@ -366,91 +366,72 @@ export function getPostProxyEffects(rule: ChaosRule | null): PostProxyResult {
 }
 
 /**
- * Corrupt a JSON response body.
- * Only call this if the upstream Content-Type is application/json.
+ * Safely corrupt a JSON response body.
  * 
- * Corruption strategies (randomly chosen):
- * - Remove a key
- * - Truncate the body
- * - Add invalid characters
- * - Break JSON syntax
+ * SAFE corruption methods (won't crash clients):
+ * - For objects: remove a random top-level key OR set a random value to null
+ * - For arrays: remove a random element OR set a random element to null
+ * 
+ * This function NEVER throws. If parsing fails or corruption cannot be applied,
+ * it returns the original body unchanged with a 'skipped' action.
  */
 export function corruptJsonBody(body: string): CorruptionResult {
-    const strategies = [
-        'truncate',
-        'invalid_chars',
-        'break_syntax',
-        'remove_key',
-    ];
+    try {
+        const parsed = JSON.parse(body);
 
-    const strategy = strategies[Math.floor(Math.random() * strategies.length)];
+        // Choose corruption method: 'remove' or 'nullify'
+        const method = Math.random() < 0.5 ? 'remove' : 'nullify';
 
-    switch (strategy) {
-        case 'truncate': {
-            // Cut off the last 30-70% of the body
-            const cutPoint = Math.floor(body.length * (0.3 + Math.random() * 0.4));
-            return {
-                body: body.slice(0, cutPoint),
-                action: `corrupt_json:truncated_at_${cutPoint}`,
-            };
-        }
+        if (Array.isArray(parsed)) {
+            // Handle arrays
+            if (parsed.length === 0) {
+                return { body, action: 'corrupt_json:skipped(reason=empty_array)' };
+            }
 
-        case 'invalid_chars': {
-            // Insert invalid UTF-8 or control characters
-            const insertPoint = Math.floor(Math.random() * body.length);
-            const corrupted = body.slice(0, insertPoint) + '\x00\xFF\xFE' + body.slice(insertPoint);
-            return {
-                body: corrupted,
-                action: 'corrupt_json:invalid_chars',
-            };
-        }
+            const index = Math.floor(Math.random() * parsed.length);
 
-        case 'break_syntax': {
-            // Remove random brackets, quotes, or colons
-            const chars = ['{', '}', '[', ']', '"', ':', ','];
-            const charToRemove = chars[Math.floor(Math.random() * chars.length)];
-            const idx = body.indexOf(charToRemove);
-            if (idx !== -1) {
-                const corrupted = body.slice(0, idx) + body.slice(idx + 1);
+            if (method === 'remove') {
+                parsed.splice(index, 1);
                 return {
-                    body: corrupted,
-                    action: `corrupt_json:removed_char:${charToRemove}`,
+                    body: JSON.stringify(parsed),
+                    action: `corrupt_json:removed_index:${index}`,
+                };
+            } else {
+                parsed[index] = null;
+                return {
+                    body: JSON.stringify(parsed),
+                    action: `corrupt_json:null_index:${index}`,
                 };
             }
-            // Fallback: truncate
-            return {
-                body: body.slice(0, -10),
-                action: 'corrupt_json:truncated_fallback',
-            };
-        }
-
-        case 'remove_key': {
-            // Try to parse and remove a random key
-            try {
-                const obj = JSON.parse(body);
-                if (typeof obj === 'object' && obj !== null) {
-                    const keys = Object.keys(obj);
-                    if (keys.length > 0) {
-                        const keyToRemove = keys[Math.floor(Math.random() * keys.length)];
-                        delete obj[keyToRemove];
-                        return {
-                            body: JSON.stringify(obj),
-                            action: `corrupt_json:removed_key:${keyToRemove}`,
-                        };
-                    }
-                }
-            } catch {
-                // Not valid JSON, fall through
+        } else if (typeof parsed === 'object' && parsed !== null) {
+            // Handle objects
+            const keys = Object.keys(parsed);
+            if (keys.length === 0) {
+                return { body, action: 'corrupt_json:skipped(reason=empty_object)' };
             }
-            // Fallback: break syntax
-            return {
-                body: body.slice(0, -5) + '<<<CORRUPTED>>>',
-                action: 'corrupt_json:appended_garbage',
-            };
-        }
 
-        default:
-            return { body, action: 'corrupt_json:none' };
+            const key = keys[Math.floor(Math.random() * keys.length)];
+
+            if (method === 'remove') {
+                delete parsed[key];
+                return {
+                    body: JSON.stringify(parsed),
+                    action: `corrupt_json:removed_key:${key}`,
+                };
+            } else {
+                parsed[key] = null;
+                return {
+                    body: JSON.stringify(parsed),
+                    action: `corrupt_json:null_value:${key}`,
+                };
+            }
+        } else {
+            // Primitive value (string, number, boolean, null) - can't corrupt meaningfully
+            return { body, action: 'corrupt_json:skipped(reason=primitive_value)' };
+        }
+    } catch {
+        // JSON parsing failed - return original unchanged
+        return { body, action: 'corrupt_json:skipped(reason=parse_error)' };
     }
 }
 

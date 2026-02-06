@@ -145,6 +145,26 @@ curl http://localhost:3001/api/logs?limit=1 | jq '.data[0] | {statusCode, action
 # Expected: {"statusCode": "timeout", "actionsApplied": ["match:Timeout Test", "timeout:triggered(ms=8000)"]}
 ```
 
+## Manual Test: Corrupt JSON
+
+```bash
+# Create a corrupt rule
+curl -X POST http://localhost:3001/api/rules \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Corrupt Test", "pathPattern": "/posts.*", "chaosType": "corrupt", "methods": ["*"], "enabled": true}'
+
+# Test - should return corrupted JSON with X-Chaos-Corrupted: 1 header
+curl -v http://localhost:3001/proxy/posts/1
+
+# Check response headers
+curl -sI http://localhost:3001/proxy/posts/1 | grep -i x-chaos-corrupted
+# Expected: X-Chaos-Corrupted: 1
+
+# Check logs
+curl http://localhost:3001/api/logs?limit=1 | jq '.data[0].actionsApplied'
+# Expected: ["match:Corrupt Test", "upstream:request", "upstream:200", "corrupt_json:removed_key:userId"]
+```
+
 ## Tech Stack
 
 - **Server**: Node.js + Express + TypeScript
