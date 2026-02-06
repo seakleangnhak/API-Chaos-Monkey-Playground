@@ -38,6 +38,71 @@ UI opens at `http://localhost:5173`
 2. Add chaos rules (latency, errors, etc.)
 3. Point your application to the proxy: `http://localhost:3001/proxy/your-endpoint`
 
+## Built-in Fake API (Offline Demo Mode)
+
+Set `targetUrl` to `internal://fake` to use the built-in fake target API. This allows you to demo chaos effects without any external dependencies.
+
+### Fake Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /fake/users` | Returns 25 deterministic users |
+| `GET /fake/orders?count=N&slow=1` | Returns orders (max 50), ?slow=1 adds delay |
+| `POST /fake/login` | Auth with admin/admin or demo/demo |
+| `GET /fake/posts` | List of posts (?limit=N) |
+| `GET /fake/posts/:id` | Single post by ID |
+
+### Quick Start
+
+```bash
+# Set target to internal fake API
+curl -X PUT http://localhost:3001/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"targetUrl": "internal://fake", "enabled": true}'
+
+# Test endpoints through proxy
+curl http://localhost:3001/proxy/users
+curl http://localhost:3001/proxy/orders?count=5
+curl -X POST http://localhost:3001/proxy/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}'
+```
+
+### Demo Scenario
+
+```json
+{
+  "name": "Offline Demo",
+  "description": "Demo all chaos types with fake API",
+  "createdAt": "2024-01-15T00:00:00Z",
+  "config": {
+    "targetUrl": "internal://fake",
+    "enabled": true
+  },
+  "rules": [
+    {
+      "id": "demo-latency",
+      "name": "Slow Orders",
+      "enabled": true,
+      "pathPattern": "/orders.*",
+      "methods": ["GET"],
+      "chaosType": "latency",
+      "latencyMs": 1500
+    },
+    {
+      "id": "demo-error",
+      "name": "Login Errors",
+      "enabled": true,
+      "pathPattern": "/login",
+      "methods": ["POST"],
+      "chaosType": "error",
+      "errorStatusCode": 500,
+      "errorMessage": "Internal chaos error"
+    }
+  ]
+}
+```
+
 ## Architecture
 
 ```

@@ -12,6 +12,7 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { apiRouter } from './api.js';
 import { proxyRouter } from './proxy.js';
+import { fakeRouter } from './fake-api.js';
 import { initWebSocket } from './websocket.js';
 
 const PORT = process.env.PORT || 3001;
@@ -30,6 +31,9 @@ app.get('/health', (_req, res) => {
 
 // API routes for UI
 app.use('/api', apiRouter);
+
+// Fake target API (for offline demo mode)
+app.use('/fake', fakeRouter);
 
 // Proxy routes - all requests to /proxy/* get forwarded
 app.use('/proxy', proxyRouter);

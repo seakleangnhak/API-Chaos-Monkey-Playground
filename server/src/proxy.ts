@@ -132,12 +132,21 @@ async function proxyHandler(
     }
 
     // -------------------------------------------------------------------------
-    // Build target URL
+    // Build target URL (handle internal://fake for offline demo mode)
     // -------------------------------------------------------------------------
 
+    const isInternalFake = config.targetUrl === 'internal://fake';
     let targetUrl: URL;
+
     try {
-        targetUrl = new URL(req.path, config.targetUrl);
+        if (isInternalFake) {
+            // Route to the built-in fake API at /fake/* on same server
+            // We use localhost with the same port to route internally
+            const port = process.env.PORT || 3001;
+            targetUrl = new URL(`/fake${req.path}`, `http://localhost:${port}`);
+        } else {
+            targetUrl = new URL(req.path, config.targetUrl);
+        }
         const queryIndex = req.originalUrl.indexOf('?');
         if (queryIndex !== -1) {
             targetUrl.search = req.originalUrl.slice(queryIndex);
