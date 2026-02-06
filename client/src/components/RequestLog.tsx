@@ -62,8 +62,9 @@ export function RequestLog() {
         return `badge badge--method badge--method-${method.toLowerCase()}`;
     };
 
-    const getStatusClass = (status?: number) => {
+    const getStatusClass = (status?: number | 'timeout') => {
         if (!status) return 'badge badge--status';
+        if (status === 'timeout') return 'badge badge--status badge--status-error';
         return status >= 400
             ? 'badge badge--status badge--status-error'
             : 'badge badge--status badge--status-success';

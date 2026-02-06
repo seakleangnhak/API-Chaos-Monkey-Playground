@@ -54,3 +54,15 @@ export interface ApiResponse<T> {
     data?: T;
     error?: string;
 }
+
+/**
+ * A Chaos Scenario is a complete profile of config + rules that can be
+ * saved, loaded, imported, exported, or shared via URL.
+ */
+export interface ChaosScenario {
+    name: string;
+    description?: string;
+    createdAt: string; // ISO timestamp
+    config: ProxyConfig;
+    rules: ChaosRule[];
+}

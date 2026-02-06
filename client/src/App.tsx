@@ -7,8 +7,15 @@
 import { ConfigPanel } from './components/ConfigPanel';
 import { RulesPanel } from './components/RulesPanel';
 import { RequestLog } from './components/RequestLog';
+import { ScenariosPanel } from './components/ScenariosPanel';
 
 function App() {
+    // Force refresh when scenario is applied
+    const handleScenarioApplied = () => {
+        // Trigger a page reload to refresh all panels with new data
+        window.location.reload();
+    };
+
     return (
         <div className="app-container">
             <header className="app-header">
@@ -28,6 +35,7 @@ function App() {
 
             <main className="main-grid">
                 <aside className="flex flex-col gap-md">
+                    <ScenariosPanel onScenarioApplied={handleScenarioApplied} />
                     <ConfigPanel />
                     <RulesPanel />
                 </aside>

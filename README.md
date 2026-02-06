@@ -53,6 +53,54 @@ UI opens at `http://localhost:5173`
                      └───────────────────┘
 ```
 
+## Chaos Scenarios
+
+Save, load, import, export, and share complete chaos configurations.
+
+### Scenario Structure
+
+```json
+{
+  "name": "High Latency Test",
+  "description": "Simulates slow API responses",
+  "createdAt": "2024-01-15T10:30:00Z",
+  "config": {
+    "targetUrl": "https://jsonplaceholder.typicode.com",
+    "enabled": true
+  },
+  "rules": [
+    {
+      "id": "rule-1",
+      "name": "Slow Posts",
+      "enabled": true,
+      "pathPattern": "/posts.*",
+      "methods": ["*"],
+      "chaosType": "latency",
+      "latencyMs": 2000
+    }
+  ]
+}
+```
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Save** | Save current config + rules as a named scenario |
+| **Load** | Apply a saved scenario (replaces current state) |
+| **Export** | Download scenario as JSON file |
+| **Import** | Upload a JSON file to add a scenario |
+| **Share** | Generate a URL with embedded scenario data |
+
+### Share Links
+
+Share links use URL-safe base64 encoding in the hash:
+```
+http://localhost:5173/#scenario=eyJuYW1lIjoiVGVzdC...
+```
+
+When someone opens a share link, they're prompted to apply and optionally save the scenario.
+
 ## Chaos Types
 
 | Type | Description | Parameters |
